@@ -143,6 +143,56 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, {"started": started})
             return
 
+        if parsed.path == "/api/delete":
+            length = int(self.headers.get("Content-Length", "0"))
+            try:
+                body = json.loads(self.rfile.read(length).decode("utf-8"))
+                idx = int(body["id"])
+            except Exception as e:
+                self._json(400, {"error": f"bad request: {e}"})
+                return
+
+            with FILES_LOCK:
+                try:
+                    target_path = FILES[idx]
+                except IndexError:
+                    self._json(404, {"error": "id out of range"})
+                    return
+
+            if not os.path.exists(target_path):
+                with FILES_LOCK:
+                    if idx < len(FILES) and FILES[idx] == target_path:
+                        del FILES[idx]
+                self._json(410, {"error": "file already gone", "removed": True})
+                return
+
+            ps_script = (
+                "Add-Type -AssemblyName Microsoft.VisualBasic; "
+                "[Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile("
+                "'" + target_path.replace("'", "''") + "',"
+                "'OnlyErrorDialogs','SendToRecycleBin')"
+            )
+            try:
+                proc = subprocess.run(
+                    ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", ps_script],
+                    capture_output=True, text=True,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                )
+                if proc.returncode != 0 or os.path.exists(target_path):
+                    err = (proc.stderr or proc.stdout or "unknown error").strip().splitlines()
+                    self._json(500, {"error": f"delete failed: {err[0] if err else 'unknown'}"})
+                    return
+            except Exception as e:
+                self._json(500, {"error": f"delete failed: {e}"})
+                return
+
+            with FILES_LOCK:
+                if idx < len(FILES) and FILES[idx] == target_path:
+                    del FILES[idx]
+                count = len(FILES)
+            self._json(200, {"ok": True, "remaining": count})
+            return
+
         if parsed.path != "/api/rename":
             self._json(404, {"error": "not found"})
             return

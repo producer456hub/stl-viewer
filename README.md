@@ -11,6 +11,7 @@ A tiny local web app for browsing and renaming all the `.stl` files on your disk
 - Rename in place — edits the actual file on disk
 - "Show in Folder" copies the containing folder path to clipboard
 - "Rescan Disk" re-walks `C:\` without restarting the server
+- Delete (or `Del` key) sends the file to the Recycle Bin
 
 ## Setup
 
@@ -51,6 +52,7 @@ $sc.Save()
 | Scroll | Zoom |
 | Right-drag | Pan |
 | Type filename + Enter | Rename file on disk |
+| Del | Send file to Recycle Bin (with confirm) |
 
 ## Adapting to other platforms
 

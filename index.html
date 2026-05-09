@@ -27,6 +27,8 @@
   button:hover { background: #3a3a3a; }
   button.primary { background: #2a6fdb; border-color: #2a6fdb; }
   button.primary:hover { background: #3b80ec; }
+  button.danger { background: #8b1f1f; border-color: #8b1f1f; }
+  button.danger:hover { background: #a82828; }
   #dir { font-size: 11px; color: #777; margin-top: 6px; word-break: break-all; }
   #status { margin-top: 6px; font-size: 12px; color: #4aa3ff; min-height: 16px; }
   #status.error { color: #ff6b6b; }
@@ -49,11 +51,12 @@
     <button id="renameBtn" class="primary">Rename (Enter)</button>
     <button id="openBtn" title="Open containing folder">Show in Folder</button>
     <button id="rescanBtn" title="Re-scan C:\ for STL files">Rescan Disk</button>
+    <button id="deleteBtn" class="danger" title="Send to Recycle Bin (Del key)">Delete</button>
   </div>
   <div id="dir"></div>
   <div id="status"></div>
 </div>
-<div id="help">← / → arrows: prev/next &nbsp;|&nbsp; Home/End: first/last &nbsp;|&nbsp; Enter in name field: rename</div>
+<div id="help">← / → arrows: prev/next &nbsp;|&nbsp; Home/End: first/last &nbsp;|&nbsp; Enter in name field: rename &nbsp;|&nbsp; Del: send to Recycle Bin</div>
 <div id="empty" style="display:none">No STL files found.</div>
 
 <script type="importmap">
@@ -180,6 +183,8 @@ document.addEventListener('keydown', (e) => {
     e.preventDefault(); loadIndex(0);
   } else if (e.key === 'End') {
     e.preventDefault(); loadIndex(files.length - 1);
+  } else if (e.key === 'Delete') {
+    e.preventDefault(); doDelete();
   }
 });
 
@@ -212,6 +217,45 @@ async function doRename() {
   } catch (e) {
     statusEl.textContent = `Rename failed: ${e.message}`;
     statusEl.className = 'error';
+  }
+}
+
+const deleteBtn = document.getElementById('deleteBtn');
+deleteBtn.addEventListener('click', doDelete);
+
+async function doDelete() {
+  if (!files.length) return;
+  const f = files[cur];
+  if (!confirm(`Send to Recycle Bin?\n\n${f.path}`)) return;
+  deleteBtn.disabled = true;
+  statusEl.className = '';
+  statusEl.textContent = 'Deleting…';
+  try {
+    const res = await fetch('/api/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: f.id })
+    });
+    const data = await res.json();
+    if (!res.ok && !data.removed) throw new Error(data.error || `HTTP ${res.status}`);
+
+    const listRes = await fetch('/api/list');
+    files = (await listRes.json()).files;
+    if (!files.length) {
+      emptyEl.style.display = 'flex';
+      countEl.textContent = '0 / 0';
+      if (currentMesh) { scene.remove(currentMesh); currentMesh = null; }
+      statusEl.textContent = 'Last file deleted.';
+      return;
+    }
+    const target = Math.min(cur, files.length - 1);
+    statusEl.textContent = `Sent to Recycle Bin: ${f.name}`;
+    loadIndex(target);
+  } catch (e) {
+    statusEl.textContent = `Delete failed: ${e.message}`;
+    statusEl.className = 'error';
+  } finally {
+    deleteBtn.disabled = false;
   }
 }
 
