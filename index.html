@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>STL Viewer</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #1a1a1a; color: #eee; font-family: -apple-system, Segoe UI, sans-serif; overflow: hidden; }
+  #viewer { position: absolute; inset: 0; }
+  #overlay {
+    position: absolute; top: 0; left: 0; right: 0;
+    padding: 12px 16px; background: linear-gradient(180deg, rgba(0,0,0,0.75), rgba(0,0,0,0));
+    pointer-events: none; z-index: 10;
+  }
+  #overlay > * { pointer-events: auto; }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  #count { font-size: 13px; color: #aaa; min-width: 110px; }
+  #namebox {
+    flex: 1; min-width: 200px;
+    font-size: 16px; padding: 6px 10px; border-radius: 6px;
+    border: 1px solid #444; background: #111; color: #eee;
+  }
+  #namebox:focus { outline: 2px solid #4aa3ff; border-color: #4aa3ff; }
+  button {
+    padding: 6px 14px; font-size: 14px; border-radius: 6px;
+    border: 1px solid #444; background: #2a2a2a; color: #eee; cursor: pointer;
+  }
+  button:hover { background: #3a3a3a; }
+  button.primary { background: #2a6fdb; border-color: #2a6fdb; }
+  button.primary:hover { background: #3b80ec; }
+  #dir { font-size: 11px; color: #777; margin-top: 6px; word-break: break-all; }
+  #status { margin-top: 6px; font-size: 12px; color: #4aa3ff; min-height: 16px; }
+  #status.error { color: #ff6b6b; }
+  #help {
+    position: absolute; bottom: 10px; left: 16px;
+    font-size: 11px; color: #666; z-index: 10;
+  }
+  #empty {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    font-size: 18px; color: #888; flex-direction: column; gap: 12px;
+  }
+</style>
+</head>
+<body>
+<div id="viewer"></div>
+<div id="overlay">
+  <div class="row">
+    <div id="count">— / —</div>
+    <input id="namebox" type="text" placeholder="filename.stl" spellcheck="false" />
+    <button id="renameBtn" class="primary">Rename (Enter)</button>
+    <button id="openBtn" title="Open containing folder">Show in Folder</button>
+    <button id="rescanBtn" title="Re-scan C:\ for STL files">Rescan Disk</button>
+  </div>
+  <div id="dir"></div>
+  <div id="status"></div>
+</div>
+<div id="help">← / → arrows: prev/next &nbsp;|&nbsp; Home/End: first/last &nbsp;|&nbsp; Enter in name field: rename</div>
+<div id="empty" style="display:none">No STL files found.</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { STLLoader } from 'three/addons/loaders/STLLoader.js';
+
+const viewerEl = document.getElementById('viewer');
+const countEl = document.getElementById('count');
+const nameEl  = document.getElementById('namebox');
+const dirEl   = document.getElementById('dir');
+const statusEl = document.getElementById('status');
+const renameBtn = document.getElementById('renameBtn');
+const openBtn = document.getElementById('openBtn');
+const emptyEl = document.getElementById('empty');
+
+let files = [];
+let cur = 0;
+let currentMesh = null;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x1a1a1a);
+
+const camera = new THREE.PerspectiveCamera(50, window.innerWidth/window.innerHeight, 0.1, 100000);
+camera.position.set(80, 80, 120);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.setSize(window.innerWidth, window.innerHeight);
+viewerEl.appendChild(renderer.domElement);
+
+scene.add(new THREE.AmbientLight(0xffffff, 0.45));
+const key = new THREE.DirectionalLight(0xffffff, 1.0); key.position.set(1, 1, 1); scene.add(key);
+const fill = new THREE.DirectionalLight(0xffffff, 0.4); fill.position.set(-1, 0.3, -0.5); scene.add(fill);
+const grid = new THREE.GridHelper(400, 40, 0x444444, 0x2a2a2a); scene.add(grid);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+const loader = new STLLoader();
+
+async function loadIndex(i) {
+  if (!files.length) return;
+  cur = (i + files.length) % files.length;
+  const f = files[cur];
+  countEl.textContent = `${cur + 1} / ${files.length}`;
+  nameEl.value = f.name;
+  dirEl.textContent = f.dir;
+  statusEl.textContent = `Loading… (${(f.size/1024).toFixed(1)} KB)`;
+  statusEl.className = '';
+
+  try {
+    const res = await fetch(`/api/file/${f.id}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const buf = await res.arrayBuffer();
+    const geom = loader.parse(buf);
+
+    if (currentMesh) {
+      scene.remove(currentMesh);
+      currentMesh.geometry?.dispose();
+      currentMesh.material?.dispose();
+    }
+
+    geom.computeBoundingBox();
+    const bb = geom.boundingBox;
+    const center = new THREE.Vector3();
+    bb.getCenter(center);
+    geom.translate(-center.x, -center.y, -center.z);
+    geom.computeVertexNormals();
+
+    const mat = new THREE.MeshPhongMaterial({ color: 0x9ab8d8, specular: 0x222222, shininess: 30, flatShading: false });
+    currentMesh = new THREE.Mesh(geom, mat);
+    scene.add(currentMesh);
+
+    const size = new THREE.Vector3();
+    bb.getSize(size);
+    const maxDim = Math.max(size.x, size.y, size.z) || 1;
+    const dist = maxDim * 2.2;
+    camera.position.set(dist, dist * 0.8, dist);
+    camera.lookAt(0, 0, 0);
+    controls.target.set(0, 0, 0);
+    controls.update();
+
+    grid.scale.setScalar(Math.max(1, maxDim / 100));
+
+    statusEl.textContent = '';
+  } catch (e) {
+    statusEl.textContent = `Failed to load: ${e.message}`;
+    statusEl.className = 'error';
+  }
+}
+
+document.addEventListener('keydown', (e) => {
+  if (document.activeElement === nameEl) {
+    if (e.key === 'Escape') { nameEl.blur(); }
+    return;
+  }
+  if (e.key === 'ArrowRight' || e.key === 'ArrowDown' || e.key === 'PageDown') {
+    e.preventDefault(); loadIndex(cur + 1);
+  } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp' || e.key === 'PageUp') {
+    e.preventDefault(); loadIndex(cur - 1);
+  } else if (e.key === 'Home') {
+    e.preventDefault(); loadIndex(0);
+  } else if (e.key === 'End') {
+    e.preventDefault(); loadIndex(files.length - 1);
+  }
+});
+
+nameEl.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); doRename(); }
+});
+
+renameBtn.addEventListener('click', doRename);
+
+async function doRename() {
+  if (!files.length) return;
+  const f = files[cur];
+  const newName = nameEl.value.trim();
+  if (!newName || newName === f.name) { nameEl.blur(); return; }
+  statusEl.textContent = 'Renaming…';
+  statusEl.className = '';
+  try {
+    const res = await fetch('/api/rename', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: f.id, name: newName })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    f.name = data.name;
+    f.path = data.path;
+    nameEl.value = f.name;
+    statusEl.textContent = `Renamed to ${f.name}`;
+    nameEl.blur();
+  } catch (e) {
+    statusEl.textContent = `Rename failed: ${e.message}`;
+    statusEl.className = 'error';
+  }
+}
+
+openBtn.addEventListener('click', () => {
+  if (!files.length) return;
+  statusEl.textContent = `Folder: ${files[cur].dir} — copy this path into Explorer.`;
+  navigator.clipboard?.writeText(files[cur].dir).then(() => {
+    statusEl.textContent = `Folder path copied to clipboard.`;
+  }).catch(() => {});
+});
+
+const rescanBtn = document.getElementById('rescanBtn');
+let scanPollTimer = null;
+
+rescanBtn.addEventListener('click', async () => {
+  rescanBtn.disabled = true;
+  statusEl.className = '';
+  statusEl.textContent = 'Starting disk scan…';
+  try {
+    await fetch('/api/rescan', { method: 'POST' });
+  } catch (e) {
+    statusEl.textContent = `Failed to start: ${e.message}`;
+    statusEl.className = 'error';
+    rescanBtn.disabled = false;
+    return;
+  }
+  pollScan();
+});
+
+async function pollScan() {
+  if (scanPollTimer) clearTimeout(scanPollTimer);
+  try {
+    const res = await fetch('/api/scan-status');
+    const s = await res.json();
+    if (s.running) {
+      const elapsed = Math.floor(Date.now()/1000 - s.started);
+      statusEl.textContent = `Scanning C:\\ … ${elapsed}s elapsed (current list: ${s.count})`;
+      scanPollTimer = setTimeout(pollScan, 2000);
+    } else {
+      rescanBtn.disabled = false;
+      if (s.error) {
+        statusEl.textContent = `Scan failed: ${s.error}`;
+        statusEl.className = 'error';
+        return;
+      }
+      const currentPath = files[cur]?.path;
+      const listRes = await fetch('/api/list');
+      const data = await listRes.json();
+      const oldCount = files.length;
+      files = data.files;
+      if (!files.length) { emptyEl.style.display = 'flex'; countEl.textContent = '0 / 0'; return; }
+      emptyEl.style.display = 'none';
+      const newIdx = files.findIndex(f => f.path === currentPath);
+      const target = newIdx >= 0 ? newIdx : 0;
+      const delta = files.length - oldCount;
+      const sign = delta >= 0 ? '+' : '';
+      statusEl.textContent = `Scan complete: ${files.length} files (${sign}${delta}).`;
+      loadIndex(target);
+    }
+  } catch (e) {
+    rescanBtn.disabled = false;
+    statusEl.textContent = `Status check failed: ${e.message}`;
+    statusEl.className = 'error';
+  }
+}
+
+(async () => {
+  const res = await fetch('/api/list');
+  const data = await res.json();
+  files = data.files;
+  if (!files.length) { emptyEl.style.display = 'flex'; countEl.textContent = '0 / 0'; return; }
+  loadIndex(0);
+})();
+</script>
+</body>
+</html>
